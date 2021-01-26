@@ -13,11 +13,6 @@
 #include <assert.h>
 #include <math.h>
 
-constexpr double xInitialValue_ = 0.1;
-constexpr double varianceY_ = 10;
-constexpr double varianceX_ = 1;
-size_t timestep_ = 1;
-
 void updateStateForecast(double& xValue, const size_t timeStep) {
   xValue = 0.5*xValue + 25*xValue/(1+std::pow(xValue, 2)) + 8*std::cos(1.2*timeStep);
 }
@@ -46,7 +41,7 @@ void updateHOfX(std::vector<double> &hOfX, const std::vector<double> &x_k){
 double estimateLikelihood(const double& hOfX,
                           const double& forecastY,
                           const double& varianceY) {
-  double likelihood = std::sqrt(0.5*M_1_PI*1/varianceY);
+  double likelihood = std::sqrt(0.5*M_1_PI*(1/varianceY));
   likelihood *= std::exp(-1/(2*varianceY)*std::pow(forecastY - hOfX, 2));
   return likelihood;
 }
@@ -55,32 +50,45 @@ void updateWeights(std::vector<double> &weightsVector,
                    const std::vector<double> &hOfX,
                    const double forecastY,
                    const double varianceY){
+  std::vector<double> probabilities;
   for (size_t particle = 0; particle < hOfX.size(); particle++) {
     double likelihood = estimateLikelihood(hOfX.at(particle), forecastY, varianceY);
-    weightsVector.at(particle) *= likelihood;
+    probabilities.push_back(likelihood);
   }
-  double weightSum = std::accumulate(weightsVector.begin(), weightsVector.end(), 0);
-  auto normalize = [&weightSum](const double& n) { return n/weightSum; };
-  std::for_each(weightsVector.begin(), weightsVector.end(), normalize);
+  double likelihoodSum = std::accumulate(probabilities.begin(), probabilities.end(), 0.0);
+  for (size_t particle = 0; particle < hOfX.size(); particle++) {
+    probabilities.at(particle) = probabilities.at(particle)/likelihoodSum;
+    weightsVector.at(particle) *= probabilities.at(particle);
+  }
+  double weightSum = std::accumulate(weightsVector.begin(), weightsVector.end(), 0.0);
+  for (size_t particle = 0; particle < hOfX.size(); particle++) {
+    weightsVector.at(particle) = weightsVector.at(particle) / weightSum;
+  }
 }
 
 void resampleX(std::vector<double> &x_k, std::vector<double> &weights){
+  // The first item in x_k always rejected under the original algo design.
+  // Diverged from Figure 2 so that c[0] = w_k[0], instead of 0.0
   std::default_random_engine generator;
   std::uniform_real_distribution<double> distribution(0.0, 1.0/weights.size());
-  std::vector<double> cdfParticles(1, 0.0);
+  std::vector<double> cdfParticles(1, weights.at(0)); //changes made here
   for (size_t particle = 1; particle < weights.size(); particle++) {
     cdfParticles.push_back(weights.at(particle) + cdfParticles.back());
   }
   double u_1 = distribution(generator);
   size_t j = 0;
   size_t i = 0;
-  double u;
+  double u = u_1;
   while (j < weights.size()) {
-    u = u_1 + 1.0 / weights.size() * j;
-    if (cdfParticles.at(i) > u) {
-      x_k.at(j) = x_k.at(i);
+    if (i >= cdfParticles.size() || cdfParticles.at(i) > u) {
+      if (i >= cdfParticles.size()) {
+        std::cout << "reached end of particles CDF w/out filling up resampled particle vector\n";
+      }
+      // had to make changes to the algo design here (before changing c[0]
+      x_k.at(j) = x_k.at(std::min(i, cdfParticles.size() - 1));
       weights.at(j) = 1.0/weights.size();
       j++;
+      u = u_1 + 1.0 / weights.size() * j;
     } else {
       i++;
     }
@@ -92,8 +100,8 @@ double calculateRMSE(const std::vector<double> &observedValues, const double tru
   for (size_t i = 0; i < observedValues.size(); i++) {
     squareErrors.push_back(std::pow(observedValues.at(i) - trueValue, 2));
   }
-  double value = std::accumulate(squareErrors.begin(), squareErrors.end(), 0);
-  value /= observedValues.size();
+  double value = std::accumulate(squareErrors.begin(), squareErrors.end(), 0.0);
+  value = value / observedValues.size();
   value = std::sqrt(value);
   return value;
 }
@@ -103,7 +111,6 @@ int main()
   const double xVariance = 1;
   const double yVariance = 10;
   size_t numberParticles;
-  std::vector<double> hOfX;
   double xTrueValue = 0.1;
   double yTrueValue;
   std::cout << "Number of particles: ";
@@ -112,6 +119,7 @@ int main()
   double particleInitialWeights = 1.0/numberParticles;
   std::vector<double> weights(numberParticles, particleInitialWeights);
   std::vector<double> x_k(numberParticles, xTrueValue);
+  std::vector<double> hOfX(numberParticles, 0);
   std::cout << "\nNumber of time steps: ";
   int timeStepCount;
   std::cin >> timeStepCount;
@@ -129,8 +137,8 @@ int main()
     rmseX.push_back(calculateRMSE(x_k, xTrueValue));
     rmseY.push_back(calculateRMSE(hOfX, yTrueValue));
     std::cout << "\nTime step: " << timeStep + 1 << std::endl;
-    std::cout << "RMSE of x: " << rmseX.end() << std::endl;
-    std::cout << "RMSE of y: " << rmseY.end() << std::endl;
+    std::cout << "RMSE of x: " << rmseX.back() << std::endl;
+    std::cout << "RMSE of y: " << rmseY.back() << std::endl;
   }
   return 0;
 }
